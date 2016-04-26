@@ -39,10 +39,8 @@ unit VirtualTrees;
 // Documentation:
 //   Markus Spoettl and toolsfactory GbR (http://www.doc-o-matic.com/, sponsoring Soft Gems development
 //   with a free copy of the Doc-O-Matic help authoring system), Sven H. (Step by step tutorial)
-// CLX:
-//   Dmitri Dmitrienko (initial developer)
 // Source repository:
-//   https://code.google.com/p/virtual-treeview/source/
+//   https://github.com/Virtual-TreeView/Virtual-TreeView
 // Accessability implementation:
 //   Marco Zehe (with help from Sebastian Modersohn)
 //----------------------------------------------------------------------------------------------------------------------
@@ -70,6 +68,7 @@ interface
 {$else}
   {$HPPEMIT '#pragma link "VirtualTreesR.lib"'}
 {$endif}
+{$HPPEMIT '#pragma link "Shell32.lib"'}
 
 uses
   Winapi.Windows, Winapi.oleacc, Winapi.Messages, System.SysUtils, Vcl.Graphics,
@@ -78,7 +77,7 @@ uses
   Winapi.ShlObj, System.UITypes, System.Generics.Collections;
 
 const
-  VTVersion = '6.2.0';
+  VTVersion = '6.2.5';
 
 const
   VTTreeStreamVersion = 2;
@@ -317,8 +316,35 @@ type
     csCheckedNormal,    // checked and not pressed
     csCheckedPressed,   // checked and pressed
     csMixedNormal,      // 3-state check box and not pressed
-    csMixedPressed      // 3-state check box and pressed
+    csMixedPressed,     // 3-state check box and pressed
+    csUncheckedDisabled,// disabled checkbox, not checkable
+    csCheckedDisabled,  // disabled checkbox, not uncheckable
+    csMixedDisabled     // disabled 3-state checkbox
   );
+
+  /// Adds some convenience methods to type TCheckState
+  TCheckStateHelper = record helper for TCheckState
+  strict private
+  const
+    // Lookup to quickly convert a specific check state into its pressed counterpart and vice versa.
+    cPressedState: array[TCheckState] of TCheckState = (
+      csUncheckedPressed, csUncheckedPressed, csCheckedPressed, csCheckedPressed, csMixedPressed, csMixedPressed, csUncheckedDisabled, csCheckedDisabled, csMixedDisabled);
+    cUnpressedState: array[TCheckState] of TCheckState = (
+      csUncheckedNormal, csUncheckedNormal, csCheckedNormal, csCheckedNormal, csMixedNormal, csMixedNormal, csUncheckedDisabled, csCheckedDisabled, csMixedDisabled);
+    cEnabledState: array[TCheckState] of TCheckState = (
+      csUncheckedNormal, csUncheckedPressed, csCheckedNormal, csCheckedPressed, csMixedNormal, csMixedPressed, csUncheckedNormal, csCheckedNormal, csMixedNormal);
+    cToggledState: array[TCheckState] of TCheckState = (
+      csCheckedNormal, csCheckedPressed, csUnCheckedNormal, csUnCheckedPressed, csCheckedNormal, csCheckedPressed, csUncheckedDisabled, csCheckedDisabled, csMixedDisabled);
+  public
+    function GetPressed(): TCheckState; inline;
+    function GetUnpressed(): TCheckState; inline;
+    function GetEnabled(): TCheckState; inline;
+    function GetToggled(): TCheckState; inline;
+    function IsDisabled(): Boolean; inline;
+    function IsChecked():   Boolean; inline;
+    function IsUnChecked(): Boolean; inline;
+    function IsMixed():     Boolean; inline;
+  end;
 
   TCheckImageKind = (
     ckLightCheck,     // gray cross
@@ -620,7 +646,7 @@ type
     function GetData(): Pointer; overload; inline;
     function GetData<T>(): T; overload; inline;
     procedure SetData(pUserData: Pointer); overload;
-    procedure SetData<T:class>(pUserData: T); overload;
+    procedure SetData<T>(pUserData: T); overload;
     procedure SetData(const pUserData: IInterface); overload;
   end;
 
@@ -897,6 +923,14 @@ type
     sdAscending,
     sdDescending
   );
+
+  TSortDirectionHelper = record helper for VirtualTrees.TSortDirection
+  strict private
+    const cSortDirectionToInt: Array [TSortDirection] of Integer = (1, -1);
+  public
+    /// Returns +1 for ascending and -1 for descending sort order.
+    function ToInt(): Integer; inline;
+  end;
 
   TVirtualTreeColumn = class(TCollectionItem)
   private
@@ -2254,7 +2288,6 @@ type
     procedure FixupTotalCount(Node: PVirtualNode);
     procedure FixupTotalHeight(Node: PVirtualNode);
     function GetBottomNode: PVirtualNode;
-    function GetCheckedCount: Integer;
     function GetCheckState(Node: PVirtualNode): TCheckState;
     function GetCheckType(Node: PVirtualNode): TCheckType;
     function GetChildCount(Node: PVirtualNode): Cardinal;
@@ -2425,6 +2458,7 @@ type
     procedure ChangeTreeStatesAsync(EnterStates, LeaveStates: TChangeStates);
     procedure ChangeScale(M, D: Integer); override;
     function CheckParentCheckState(Node: PVirtualNode; NewCheckState: TCheckState): Boolean; virtual;
+    procedure ClearSelection(pFireChangeEvent: Boolean); overload; virtual;
     procedure ClearTempCache; virtual;
     function ColumnIsEmpty(Node: PVirtualNode; Column: TColumnIndex): Boolean; virtual;
     function ComputeRTLOffset(ExcludeScrollBar: Boolean = False): Integer; virtual;
@@ -2579,6 +2613,7 @@ type
     procedure FinishChunkHeader(Stream: TStream; StartPos, EndPos: Integer); virtual;
     procedure FontChanged(AFont: TObject); virtual;
     function GetBorderDimensions: TSize; virtual;
+    function GetCheckedCount: Integer;
     function GetCheckImage(Node: PVirtualNode; ImgCheckType: TCheckType = ctNone;
       ImgCheckState: TCheckState = csUncheckedNormal; ImgEnabled: Boolean = True): Integer; virtual;
     class function GetCheckImageListFor(Kind: TCheckImageKind): TCustomImageList; virtual;
@@ -2885,7 +2920,7 @@ type
     function CanFocus: Boolean; override;
     procedure Clear; virtual;
     procedure ClearChecked;
-    procedure ClearSelection;
+    procedure ClearSelection(); overload; inline;
     function CopyTo(Source: PVirtualNode; Tree: TBaseVirtualTree; Mode: TVTNodeAttachMode;
       ChildrenOnly: Boolean): PVirtualNode; overload;
     function CopyTo(Source, Target: PVirtualNode; Mode: TVTNodeAttachMode;
@@ -2996,7 +3031,7 @@ type
     procedure InvertSelection(VisibleOnly: Boolean);
     function IsEditing: Boolean;
     function IsMouseSelecting: Boolean;
-    function IsEmpty: Boolean;
+    function IsEmpty: Boolean; inline;
     function IterateSubtree(Node: PVirtualNode; Callback: TVTGetNodeProc; Data: Pointer; Filter: TVirtualNodeStates = [];
       DoInit: Boolean = False; ChildNodesOnly: Boolean = False): PVirtualNode;
     procedure LoadFromFile(const FileName: TFileName); virtual;
@@ -3016,6 +3051,7 @@ type
                             Mode: TVTNodeAttachMode; Optimized: Boolean): Boolean;
     procedure RepaintNode(Node: PVirtualNode);
     procedure ReinitChildren(Node: PVirtualNode; Recursive: Boolean); virtual;
+    procedure InitRecursive(Node: PVirtualNode; Levels: Cardinal = MaxInt; pVisibleOnly: Boolean = True);
     procedure ReinitNode(Node: PVirtualNode; Recursive: Boolean); virtual;
     procedure ResetNode(Node: PVirtualNode); virtual;
     procedure SaveToFile(const FileName: TFileName);
@@ -3023,10 +3059,10 @@ type
     function ScrollIntoView(Node: PVirtualNode; Center: Boolean; Horizontally: Boolean = False): Boolean; overload;
     function ScrollIntoView(Column: TColumnIndex; Center: Boolean): Boolean; overload;
     procedure SelectAll(VisibleOnly: Boolean);
-    procedure SetCheckStateForAll(aCheckState: TCheckState; pSelectedOnly: Boolean);
+    procedure SetCheckStateForAll(aCheckState: TCheckState; pSelectedOnly: Boolean; pExcludeDisabled: Boolean = True);
     procedure SetNodeData(pNode: PVirtualNode; pUserData: Pointer); overload; inline;
     procedure SetNodeData(pNode: PVirtualNode; const pUserData: IInterface); overload; inline;
-    procedure SetNodeData<T:class>(pNode: PVirtualNode; pUserData: T); overload;
+    procedure SetNodeData<T>(pNode: PVirtualNode; pUserData: T); overload;
     procedure Sort(Node: PVirtualNode; Column: TColumnIndex; Direction: TSortDirection; DoInit: Boolean = True); virtual;
     procedure SortTree(Column: TColumnIndex; Direction: TSortDirection; DoInit: Boolean = True); virtual;
     procedure ToggleNode(Node: PVirtualNode);
@@ -3910,18 +3946,11 @@ const
   DefaultScrollUpdateFlags = [suoRepaintHeader, suoRepaintScrollBars, suoScrollClientArea, suoUpdateNCArea];
   TreeNodeSize = (SizeOf(TVirtualNode) + (SizeOf(Pointer) - 1)) and not (SizeOf(Pointer) - 1); // used for node allocation and access to internal data
 
-  // Lookup to quickly convert a specific check state into its pressed counterpart and vice versa.
-  PressedState: array[TCheckState] of TCheckState = (
-    csUncheckedPressed, csUncheckedPressed, csCheckedPressed, csCheckedPressed, csMixedPressed, csMixedPressed
-  );
-  UnpressedState: array[TCheckState] of TCheckState = (
-    csUncheckedNormal, csUncheckedNormal, csCheckedNormal, csCheckedNormal, csMixedNormal, csMixedNormal
-  );
   MouseButtonDown = [tsLeftButtonDown, tsMiddleButtonDown, tsRightButtonDown];
 
   // Do not modify the copyright in any way! Usage of this unit is prohibited without the copyright notice
   // in the compiled binary file.
-  Copyright: string = 'Virtual Treeview © 1999, 2010 Mike Lischke';
+  Copyright: string = 'Virtual Treeview © 1999, 2010, 2016 Mike Lischke, Joachim Marder';
 
 var
   StandardOLEFormat: TFormatEtc = (
@@ -4008,7 +4037,7 @@ const
   WideLF = Char(#10);
 
 var
-  Watcher: TCriticalSection;
+  gWatcher: TCriticalSection = nil;
   LightCheckImages,                    // global light check images
   DarkCheckImages,                     // global heavy check images
   LightTickImages,                     // global light tick images
@@ -4018,7 +4047,7 @@ var
   UtilityImages,                       // some small additional images (e.g for header dragging)
   SystemCheckImages,                   // global system check images
   SystemFlatCheckImages: TImageList;   // global flat system check images
-  Initialized: Boolean = False;        // True if global structures have been initialized.
+  gInitialized: Integer = 0;           // >0 if global structures have been initialized; otherwise 0
   NeedToUnitialize: Boolean = False;   // True if the OLE subsystem could be initialized successfully.
 
 
@@ -4117,7 +4146,7 @@ var
   Dest: TRect;
 
 begin
-  Watcher.Enter;
+  gWatcher.Enter();
   try
     // Since we want the image list appearing in the correct system colors, we have to remap its colors.
     Images := TBitmap.Create;
@@ -4150,7 +4179,7 @@ begin
       OneImage.Free;
     end;
   finally
-    Watcher.Leave;
+    gWatcher.Leave();
   end;
 end;
 
@@ -4268,7 +4297,7 @@ end;
 
 
 
-procedure InitializeGlobalStructures;
+procedure InitializeGlobalStructures();
 
 // initialization of stuff global to the unit
 
@@ -4276,7 +4305,11 @@ var
   Flags: Cardinal;
 
 begin
-  Initialized := True;
+  if (gInitialized > 0) or (InterlockedIncrement(gInitialized) <> 1) then // Ensure threadsafe that this code is executed only once
+    exit;
+
+  // This watcher is used whenever a global structure could be modified by more than one thread.
+  gWatcher := TCriticalSection.Create();
 
   // For the drag image a fast MMX blend routine is used. We have to make sure MMX is available.
   MMXAvailable := HasMMX;
@@ -4351,12 +4384,15 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
-procedure FinalizeGlobalStructures;
+procedure FinalizeGlobalStructures();
 
 var
   HintWasEnabled: Boolean;
 
 begin
+  if gInitialized = 0 then
+    exit; // Was not initialized
+
   LightCheckImages.Free;
   LightCheckImages := nil;
   DarkCheckImages.Free;
@@ -4389,6 +4425,8 @@ begin
     if HintWasEnabled then
       Application.ShowHint := True;
   end;
+  gWatcher.Free;
+  gWatcher := nil;
 end;
 
 
@@ -9970,9 +10008,9 @@ var
   I: Integer;
 begin
   // This method is only executed if toAutoChangeScale is set
+  Self.Height := MulDiv(FHeight, M, D);
   if not ParentFont then
     FFont.Size := MulDiv(FFont.Size, M, D);
-  Self.Height := MulDiv(FHeight, M, D);
   // Scale the columns widths too
   for I := 0 to FColumns.Count - 1 do
   begin
@@ -11870,10 +11908,16 @@ begin
     case Index of
       0:
         StyleServices.GetElementColor(StyleServices.GetElementDetails(ttItemDisabled), ecTextColor, Result); // DisabledColor
-      1, 2, 3, 6, 10, 12, 13:
-        Result := StyleServices.GetSystemColor(clHighlight); // 1:DropMarkColor 2:DropTargetColor 3: FocusedSelectionColor
-                                                             // 6:UnfocusedSelectionColor 10:UnfocusedSelectionBorderColor
-                                                             // 12:SelectionRectangleBlendColor 13:SelectionRectangleBorderColor
+      1, 2, 3, 12, 13:
+        if FColors[Index] = clHighlight then // the default value?
+          Result := StyleServices.GetSystemColor(clHighlight)  // 1:DropMarkColor 2:DropTargetColor 3: FocusedSelectionColor
+        else                                                   // 12:SelectionRectangleBlendColor 13:SelectionRectangleBorderColor
+          Result := FColors[Index];
+      6, 10:
+        if FColors[Index] = clBtnFace then // the default value?
+          Result := StyleServices.GetSystemColor(clHighlight) // 6:UnfocusedSelectionColor 10:UnfocusedSelectionBorderColor
+        else
+          Result := FColors[Index];
       4:
         Result := StyleServices.GetSystemColor(clBtnFace); // GridLineColor
       5:
@@ -12017,8 +12061,7 @@ end;
 constructor TBaseVirtualTree.Create(AOwner: TComponent);
 
 begin
-  if not Initialized then
-    InitializeGlobalStructures;
+  InitializeGlobalStructures();
 
   inherited;
 
@@ -12104,7 +12147,7 @@ begin
   FClipboardFormats := TClipboardFormats.Create(Self);
   FOptions := GetOptionsClass.Create(Self);
 
-  if not (csDesigning in ComponentState) then //Don't cerate worker thread in IDE, there is no use for it
+  if not (csDesigning in ComponentState) then //Don't create worker thread in IDE, there is no use for it
     AddThreadReference;
   VclStyleChanged();
 end;
@@ -12114,6 +12157,16 @@ end;
 destructor TBaseVirtualTree.Destroy;
 
 begin
+  // Disconnect all remote MSAA connections
+  if Assigned(FAccessibleItem) then begin
+    CoDisconnectObject(FAccessibleItem, 0);
+    FAccessibleItem := nil;
+  end;
+  if Assigned(fAccessible) then begin
+    CoDisconnectObject(fAccessible, 0);
+    fAccessible := nil;
+  end;
+
   InterruptValidation();
   Exclude(FOptions.FMiscOptions, toReadOnly);
   ReleaseThreadReference(Self);
@@ -12352,15 +12405,16 @@ begin
                     begin
                       if Run.CheckType in [ctCheckBox, ctTriStateCheckBox] then
                       begin
-                        SetCheckState(Run, csUncheckedNormal);
+                        if not Run.CheckState.IsDisabled() then
+                          SetCheckState(Run, csUncheckedNormal);
                         // Check if the new child state was set successfully, otherwise we have to adjust the
                         // node's new check state accordingly.
                         case Run.CheckState of
-                          csCheckedNormal:
+                          csCheckedNormal, csCheckedDisabled:
                             Inc(CheckedCount);
                           csMixedNormal:
                             Inc(MixedCheckCount);
-                          csUncheckedNormal:
+                          csUncheckedNormal, csUncheckedDisabled:
                             Inc(UncheckedCount);
                         end;
                       end;
@@ -12390,7 +12444,8 @@ begin
                     begin
                       if Run.CheckType in [ctCheckBox, ctTriStateCheckBox] then
                       begin
-                        SetCheckState(Run, csCheckedNormal);
+                        if not Run.CheckState.IsDisabled() then
+                          SetCheckState(Run, csCheckedNormal);
                         // Check if the new child state was set successfully, otherwise we have to adjust the
                         // node's new check state accordingly.
                         case Run.CheckState of
@@ -12439,7 +12494,7 @@ begin
       if Result then
         CheckState := Value // Set new check state
       else
-        CheckState := UnpressedState[CheckState]; // Reset dynamic check state.
+        CheckState := CheckState.GetUnpressed(); // Reset dynamic check state.
 
       // Propagate state up to the parent.
       if not (vsInitialized in Parent.States) then
@@ -13656,6 +13711,29 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
+procedure TBaseVirtualTree.InitRecursive(Node: PVirtualNode; Levels: Cardinal = MaxInt; pVisibleOnly: Boolean = True);
+
+// Initializes a node and optionally its children up to a certain level.
+
+var
+  Run: PVirtualNode;
+begin
+  if not Assigned(Node) then
+    Node := FRoot;
+
+  if (Node <> FRoot) and not (vsInitialized in Node.States) then
+    InitNode(Node);
+  if (Levels = 0) or (pVisibleOnly and not (vsExpanded in Node.States))  then
+    exit;
+  Run := Node.FirstChild;
+
+  while Assigned(Run) do
+  begin
+    InitRecursive(Run, Levels - 1, pVisibleOnly);
+    Run := Run.NextSibling;
+  end;
+end;
+
 procedure TBaseVirtualTree.InitRootNode(OldSize: Cardinal = 0);
 
 // Reinitializes the root node.
@@ -14333,11 +14411,12 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
-procedure TBaseVirtualTree.SetCheckStateForAll(aCheckState: TCheckState; pSelectedOnly: Boolean);
+procedure TBaseVirtualTree.SetCheckStateForAll(aCheckState: TCheckState; pSelectedOnly: Boolean; pExcludeDisabled: Boolean = True);
 
 // Changes the check state for all or for all seledcted nodes.
 // aCheckState: The new check state.
-// pSelectedOnly: If passed True, only the selected nodes will bechnaged, I f apssed Falsee all nodes in the control will be changed.
+// pSelectedOnly: If passed True, only the selected nodes will bechnaged, if passed False all nodes in the control will be changed.
+// pExcludeDisabled: Optiopnal. If passed True (the default value), disabled checkboxes won't be changed, if passed False disabled checkboxes will be altered too.
 
 var
   lItem : PVirtualNode;
@@ -14352,7 +14431,8 @@ begin
         lItem := GetFirst;
       //for i:=0 to List.Items.Count-1 do begin
       while Assigned(lItem) do begin
-        CheckState[lItem] := aCheckState;
+        if not pExcludeDisabled or not CheckState[lItem].IsDisabled() then
+          CheckState[lItem] := aCheckState;
         if pSelectedOnly then
           lItem := GetNextSelected(lItem)
         else
@@ -14381,10 +14461,13 @@ begin
     begin
       if not (vsInitialized in Node.Parent.States) then
         InitNode(Node.Parent);
-      if (Node.Parent.CheckType = ctTriStateCheckBox) and
-        (Node.Parent.CheckState in [csUncheckedNormal, csCheckedNormal]) then
-        CheckState[Node] := Node.Parent.CheckState;
-    end;
+      if (Node.Parent.CheckType = ctTriStateCheckBox) then begin
+        if (Node.Parent.CheckState in [csUncheckedNormal, csUncheckedDisabled]) then
+          CheckState[Node] := csUncheckedNormal
+        else if (Node.Parent.CheckState in [csCheckedNormal, csCheckedDisabled]) then
+          CheckState[Node] := csCheckedNormal;
+      end;//if
+    end;//if
     InvalidateNode(Node);
   end;
 end;
@@ -14488,10 +14571,6 @@ begin
           StructureChange(nil, crChildAdded)
         else
           StructureChange(Node, crChildAdded);
-
-        // One may want to reinit the nodes here, especially to fix Issue #572 but that may trigger
-        // stack overflows in user code that calls AddChild inside the OnInitNode or OnInitChildren events.
-        //ReinitNode(Node, True);
       end;
     end;
   end;
@@ -14740,7 +14819,7 @@ begin
       Include(Node.States, vsFiltered);
       if not (toShowFilteredNodes in FOptions.FPaintOptions) then
       begin
-        if vsInitializing in Node.States then
+        if (vsInitializing in Node.States) and not (vsHasChildren in Node.States) then
           AdjustTotalHeight(Node, 0, False)
         else
           AdjustTotalHeight(Node, -Integer(NodeHeight[Node]), True);
@@ -14919,7 +14998,7 @@ procedure TBaseVirtualTree.SetNodeData<T>(pNode: PVirtualNode; pUserData: T);
   // Can be used to set user data of a PVirtualNode to a class instance.
 
 begin
-  SetNodeData(pNode, Pointer(pUserData));
+  pNode.SetData<T>(pUserData);
 end;
 
 procedure TBaseVirtualTree.SetNodeData(pNode: PVirtualNode; const pUserData: IInterface);
@@ -16535,7 +16614,7 @@ begin
       if (tsKeyCheckPending in FStates) and (CharCode <> VK_SPACE) then
       begin
         DoStateChange([], [tskeyCheckPending]);
-        FCheckNode.CheckState := UnpressedState[FCheckNode.CheckState];
+        FCheckNode.CheckState := FCheckNode.CheckState.GetUnpressed();
         RepaintNode(FCheckNode);
         FCheckNode := nil;
       end;
@@ -16974,7 +17053,7 @@ begin
             if not (tsIncrementalSearching in FStates) then
             begin
               if ssCtrl in Shift then
-                if not (toReverseFullExpandHotKey in TreeOptions.MiscOptions) and (ssShift in Shift) then
+                if (toReverseFullExpandHotKey in TreeOptions.MiscOptions) xor (ssShift in Shift) then
                   FullExpand
                 else
                   FHeader.AutoFitColumns
@@ -16988,7 +17067,7 @@ begin
             if not (tsIncrementalSearching in FStates) then
             begin
               if ssCtrl in Shift then
-                if not (toReverseFullExpandHotKey in TreeOptions.MiscOptions) and (ssShift in Shift) then
+                if (toReverseFullExpandHotKey in TreeOptions.MiscOptions) xor (ssShift in Shift) then
                   FullCollapse
                 else
                   FHeader.RestoreColumns
@@ -17039,7 +17118,7 @@ begin
                   DoStateChange([tsKeyCheckPending]);
                   FCheckNode := FFocusedNode;
                   FPendingCheckState := NewCheckState;
-                  FCheckNode.CheckState := PressedState[FCheckNode.CheckState];
+                  FCheckNode.CheckState := FCheckNode.CheckState.GetPressed();
                   RepaintNode(FCheckNode);
                 end;
               end;
@@ -17424,13 +17503,9 @@ begin
     DC := GetDCEx(Handle, Message.Rgn, Flags or DCX_INTERSECTRGN);
 
   if DC <> 0 then
-  begin
-    if hoVisible in FHeader.FOptions then
-    begin
-      R := FHeaderRect;
-      FHeader.FColumns.PaintHeader(DC, R, -FEffectiveOffsetX);
-    end;
+  try
     OriginalWMNCPaint(DC);
+  finally
     ReleaseDC(Handle, DC);
   end;
   if (((tsUseThemes in FStates) and not VclStyleEnabled) or (VclStyleEnabled and (seBorder in StyleElements))) then
@@ -17443,7 +17518,8 @@ end;
 //----------------------------------------------------------------------------------------------------------------------
 
 procedure TBaseVirtualTree.WMPaint(var Message: TWMPaint);
-
+var
+  DC: HDC;
 begin
   if tsVCLDragging in FStates then
     ImageList_DragShowNolock(False);
@@ -17451,11 +17527,22 @@ begin
     FUpdateRect := ClientRect
   else
     GetUpdateRect(Handle, FUpdateRect, True);
-  
+
   inherited;
- 
+
   if tsVCLDragging in FStates then
     ImageList_DragShowNolock(True);
+
+  if hoVisible in FHeader.FOptions then
+  begin
+    DC := GetDCEx(Handle, 0, DCX_CACHE or DCX_CLIPSIBLINGS or DCX_WINDOW or DCX_VALIDATE);
+    if DC <> 0 then
+      try
+        FHeader.FColumns.PaintHeader(DC, FHeaderRect, -FEffectiveOffsetX);
+    finally
+      ReleaseDC(Handle, DC);
+    end;
+  end;//if header visible
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -17742,7 +17829,8 @@ begin
           DoTimerScroll;
         end;
       ChangeTimer:
-        DoChange(FLastChangedNode);
+        if tsChangePending in FStates then // see issue #602
+          DoChange(FLastChangedNode);
       StructureChangeTimer:
         DoStructureChange(FLastStructureChangeNode, FLastStructureChangeReason);
       SearchTimer:
@@ -17836,6 +17924,8 @@ begin
     Changed := InternalAddToSelection(FSingletonNodeArray, 1, False);
     if Changed then
     begin
+      if (SelectedCount = 1) then
+        FocusedNode := Node; // if only one node is selected, make sure the focused node changes with the selected node
       InvalidateNode(Node);
       Change(Node);
     end;
@@ -18229,7 +18319,7 @@ begin
 
   if FUpdateCount = 0 then
   begin
-    if (FChangeDelay > 0) and not (tsSynchMode in FStates) then
+    if (FChangeDelay > 0) and HandleAllocated and not (tsSynchMode in FStates) then
       SetTimer(Handle, ChangeTimer, FChangeDelay, nil)
     else
       DoChange(Node);
@@ -18241,14 +18331,16 @@ end;
 procedure TBaseVirtualTree.ChangeScale(M, D: Integer);
 
 begin
-  inherited;
-
   if (M <> D) and (toAutoChangeScale in FOptions.FAutoOptions) then
   begin
-    SetDefaultNodeHeight(MulDiv(FDefaultNodeHeight, M, D));
-    Indent := MulDiv(Indent, M, D);
-    FHeader.ChangeScale(M, D);
+    if sfHeight in ScalingFlags then begin
+      FHeader.ChangeScale(M, D);
+      SetDefaultNodeHeight(MulDiv(FDefaultNodeHeight, M, D));
+    end;
+    if sfHeight in ScalingFlags then
+      Indent := MulDiv(Indent, M, D);
   end;
+  inherited ChangeScale(M, D);
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -18287,7 +18379,7 @@ begin
       if Run.CheckType in [ctCheckBox, ctTriStateCheckBox] then
       begin
         Inc(BoxCount);
-        if NewCheckState in [csCheckedNormal, csCheckedPressed] then
+        if NewCheckState.IsChecked then
           Inc(CheckCount);
         PartialCheck := PartialCheck or (NewCheckState = csMixedNormal);
       end;
@@ -18296,7 +18388,7 @@ begin
       if Run.CheckType in [ctCheckBox, ctTriStateCheckBox] then
       begin
         Inc(BoxCount);
-        if Run.CheckState in [csCheckedNormal, csCheckedPressed] then
+        if Run.CheckState.IsChecked then
           Inc(CheckCount);
         PartialCheck := PartialCheck or (Run.CheckState = csMixedNormal);
       end;
@@ -19047,11 +19139,9 @@ function TBaseVirtualTree.DetermineNextCheckState(CheckType: TCheckType; CheckSt
 begin
   case CheckType of
     ctTriStateCheckBox,
-    ctCheckBox:
-      if CheckState = csCheckedNormal then
-        Result := csUncheckedNormal
-      else
-        Result := csCheckedNormal;
+    ctCheckBox: begin
+      Result := CheckState.GetToggled();
+    end;//ctCheckbox
     ctRadioButton:
       Result := csCheckedNormal;
     ctButton:
@@ -19840,6 +19930,8 @@ end;
 
 procedure TBaseVirtualTree.DoFreeNode(Node: PVirtualNode);
 
+var
+  IntfData: IInterface;
 begin
   // Prevent invalid references
   if Node = FLastChangedNode then
@@ -19859,7 +19951,12 @@ begin
     FOnFreeNode(Self, Node);
 
   if vsReleaseCallOnUserDataRequired in Node.States then
-    GetInterfaceFromNodeData<IInterface>(Node)._Release();
+  begin
+    // Data may have been set to nil, in which case we can't call _Release on it
+    IntfData := GetInterfaceFromNodeData<IInterface>(Node);
+    if Assigned(IntfData) then
+      IntfData._Release();
+  end;
 
   FreeMem(Node);
   if Self.UpdateCount = 0 then
@@ -21562,11 +21659,18 @@ begin
   begin
     ImgCheckType := Node.CheckType;
     ImgCheckState := Node.CheckState;
-    ImgEnabled := not (vsDisabled in Node.States) and Enabled;
+    ImgEnabled := not (vsDisabled in Node.States) and Self.Enabled;
+
     IsHot := Node = FCurrentHotNode;
   end
   else
     IsHot := False;
+
+  if ImgCheckState.IsDisabled then begin // disabled image?
+    // We need to use disabled images, so map ImgCheckState value from disabled to normal, as disabled state is expressed by ImgEnabled.
+    ImgEnabled := False;
+    ImgCheckState := ImgCheckState.GetEnabled();
+  end;//if
 
   if ImgCheckType = ctTriStateCheckBox then
     ImgCheckType := ctCheckBox;
@@ -22177,7 +22281,7 @@ begin
             DoStateChange([tsMouseCheckPending]);
             FCheckNode := HitInfo.HitNode;
             FPendingCheckState := NewCheckState;
-            FCheckNode.CheckState := PressedState[FCheckNode.CheckState];
+            FCheckNode.CheckState := FCheckNode.CheckState.GetPressed();
             InvalidateNode(HitInfo.HitNode);
             MayEdit := False;
           end;
@@ -22386,7 +22490,7 @@ begin
         DoStateChange([tsMouseCheckPending]);
         FCheckNode := HitInfo.HitNode;
         FPendingCheckState := NewCheckState;
-        FCheckNode.CheckState := PressedState[FCheckNode.CheckState];
+        FCheckNode.CheckState := FCheckNode.CheckState.GetPressed();
         InvalidateNode(HitInfo.HitNode);
       end;
     end;
@@ -22444,7 +22548,7 @@ begin
       end;
     end
     else if not ((hiNowhere in HitInfo.HitPositions) and (toAlwaysSelectNode in Self.TreeOptions.SelectionOptions)) then // When clicking in the free space we don't want the selection to be cleared in case toAlwaysSelectNode is set
-      ClearSelection;
+      ClearSelection(False);
   end;
 
   // pending node edit
@@ -22508,6 +22612,9 @@ begin
       DoFocusChange(FFocusedNode, FFocusedColumn);
     end;
   end;
+
+  if SelectedCount = 0 then
+    Change(nil);
 
   // Drag'n drop initiation
   // If we lost focus in the interim the button states would be cleared in WM_KILLFOCUS.
@@ -22573,7 +22680,7 @@ begin
        if (HitInfo.HitNode = FCheckNode) and (hiOnItem in HitInfo.HitPositions) then
           DoCheckClick(FCheckNode, FPendingCheckState)
         else
-          FCheckNode.CheckState := UnpressedState[FCheckNode.CheckState];
+          FCheckNode.CheckState := FCheckNode.CheckState.GetUnpressed();
         InvalidateNode(FCheckNode);
       end;
       FCheckNode := nil;
@@ -23079,7 +23186,7 @@ begin
       // amNoWhere: do nothing
     end;
     // Remove temporary states.
-    Node.States := Node.States - [vsChecking, vsCutOrCopy, vsDeleting, vsReleaseCallOnUserDataRequired];
+    Node.States := Node.States - [vsChecking, vsCutOrCopy, vsDeleting];
 
     if (Mode <> amNoWhere) then begin
       Inc(Node.Parent.ChildCount);
@@ -23622,6 +23729,7 @@ var
   ForegroundColor: COLORREF;
   R: TRect;
   Details: TThemedElementDetails;
+  lSize: TSize;
 begin
   with ImageInfo do
   begin
@@ -23659,8 +23767,12 @@ begin
       else
         Details := StyleServices.GetElementDetails(tbButtonRoot);
       end;
-      //StyleServices.GetElementSize(Canvas.Handle, Details, TElementSize.esActual, lSize);
-      R := Rect(XPos, YPos, XPos + Self.fCheckImages.Width, YPos + Self.fCheckImages.Height);
+      if not StyleServices.GetElementSize(Canvas.Handle, Details, TElementSize.esActual, lSize) then begin
+        // radio buttons fail in RAD Studio 10 Seattle and lower, fallback to checkbox images. Siee issue #615
+        if not StyleServices.GetElementSize(Canvas.Handle, StyleServices.GetElementDetails(tbCheckBoxUncheckedNormal), TElementSize.esActual, lSize) then
+          lSize := TSize.Create(GetSystemMetrics(SM_CXMENUCHECK), GetSystemMetrics(SM_CYMENUCHECK));
+      end;//if
+      R := Rect(XPos, YPos, XPos + lSize.cx, YPos + lSize.cy);
       StyleServices.DrawElement(Canvas.Handle, Details, R);
       if Index in [21..24] then
         UtilityImages.Draw(Canvas, XPos, YPos, 4);
@@ -24367,6 +24479,7 @@ begin
   if not FSelectionLocked then
   begin
     Assert(Assigned(Node), 'Node must not be nil!');
+    Assert(GetCurrentThreadId = MainThreadId, Self.Classname + '.RemoveFromSelection() must only be called from UI thread.');
     if vsSelected in Node.States then
     begin
       Exclude(Node.States, vsSelected);
@@ -24811,7 +24924,7 @@ begin
 
   if FUpdateCount = 0 then
   begin
-    if (FChangeDelay > 0) and not (tsSynchMode in FStates) then
+    if (FChangeDelay > 0) and HandleAllocated and not (tsSynchMode in FStates) then
       SetTimer(Handle, StructureChangeTimer, FChangeDelay, nil)
     else
       DoStructureChange(Node, Reason);
@@ -25744,6 +25857,7 @@ end;
 procedure TBaseVirtualTree.BeginUpdate;
 
 begin
+  Assert(GetCurrentThreadId = MainThreadId, 'UI controls like ' + Classname + ' should only be manipulated through the main thread.');
   if not (csDestroying in ComponentState) then
   begin
     if FUpdateCount = 0 then
@@ -25839,7 +25953,7 @@ end;
 procedure TBaseVirtualTree.Clear;
 
 begin
-  if not (toReadOnly in FOptions.FMiscOptions) or (csDestroying in ComponentState) then
+  if (not IsEmpty and not (toReadOnly in FOptions.FMiscOptions)) or (csDestroying in ComponentState) then
   begin
     BeginUpdate;
     try
@@ -25891,7 +26005,14 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
-procedure TBaseVirtualTree.ClearSelection;
+procedure TBaseVirtualTree.ClearSelection();
+begin
+  ClearSelection(True);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.ClearSelection(pFireChangeEvent: Boolean);
 
 var
   Node: PVirtualNode;
@@ -25929,7 +26050,8 @@ begin
     end;
 
     InternalClearSelection;
-    Change(nil);
+    if pFireChangeEvent then
+      Change(nil);
   end;
 end;
 
@@ -26213,7 +26335,7 @@ begin
         WasInSynchMode := tsSynchMode in FStates;
         Include(FStates, tsSynchMode);
         RemoveFromSelection(Node);
-        EnsureNodeSelected();
+        //EnsureNodeSelected(); // also done in  DoFreeNode()
         if not WasInSynchMode then
           Exclude(FStates, tsSynchMode);
         InvalidateToBottom(LastParent);
@@ -28897,11 +29019,9 @@ begin
               if Assigned(Result.PrevSibling) then
               begin
                 // No children anymore, so take the previous sibling.
-                if vsVisible in Result.PrevSibling.States then
-                begin
-                  Result := Result.PrevSibling;
+                Result := Result.PrevSibling;
+                if vsVisible in Result.States then
                   Break;
-                end;
               end
               else
               begin
@@ -30646,7 +30766,7 @@ begin
           RestoreDC(TargetCanvas.Handle, SavedTargetDC)
         else
           NodeBitmap.Free;
-      end;
+      end;//try..finally
       
       if (ChildCount[nil] = 0) and (FEmptyListMessage <> '') then
       begin
@@ -33765,7 +33885,7 @@ end;
 function TCustomVirtualStringTree.InternalData(Node: PVirtualNode): Pointer;
 
 begin
-  if (Node = FRoot) or (Node = nil) or (FInternalDataOffset = 0) then
+  if (Node = nil) or (FInternalDataOffset = 0) then
     Result := nil
   else
     Result := PByte(Node) + Self.NodeDataSize + FInternalDataOffset;
@@ -34239,20 +34359,21 @@ begin
     Data := InternalData(Node);
     if Assigned(Data) then
       Data^ := 0;
-
-    Exclude(Node.States, vsHeightMeasured);
   end;
 
-  if Assigned(Node) then
-    Run := Node.FirstChild
-  else
-    Run := FRoot.FirstChild;
-
-  while Assigned(Run) do
+  if Recursive then
   begin
-    ResetInternalData(Run, Recursive);
-    Run := Run.NextSibling;
-  end;
+    if Assigned(Node) then
+      Run := Node.FirstChild
+    else
+      Run := FRoot.FirstChild;
+
+    while Assigned(Run) do
+    begin
+      ResetInternalData(Run, Recursive);
+      Run := Run.NextSibling;
+    end;
+  end;//if Recursive
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -34262,7 +34383,7 @@ procedure TCustomVirtualStringTree.ReinitNode(Node: PVirtualNode; Recursive: Boo
 begin
   inherited;
 
-  ResetInternalData(Node, False);  // False because there already is a loop inside ReinitNode
+  ResetInternalData(Node, False);  // False because we are already in a loop inside ReinitNode
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -34271,11 +34392,7 @@ procedure TCustomVirtualStringTree.SetChildCount(Node: PVirtualNode; NewChildCou
 
 begin
   inherited;
-
-  // See comment at the end of TBaseVirtualTree.SetChildCount
-  //ReinitChildren(Node, True);
-
-  ResetInternalData(Node, True);
+  ResetInternalData(Node, False);
 end;
 
 //----------------- TVirtualStringTree ---------------------------------------------------------------------------------
@@ -34429,7 +34546,10 @@ end;
 procedure TVirtualNode.SetData<T>(pUserData: T);
 
 begin
-  SetData(Pointer(pUserData));
+  T(Pointer((PByte(@(Self.Data))))^) := pUserData;
+  if PTypeInfo(TypeInfo(T)).Kind = tkInterface then
+    Include(Self.States, vsReleaseCallOnUserDataRequired);
+  Include(Self.States, vsOnFreeNodeCallRequired);
 end;
 
 { TVTImageInfo }
@@ -34451,15 +34571,59 @@ begin
   Self.ExportType := pExportType;
 end;
 
+{ TCheckStateHelper }
+
+function TCheckStateHelper.IsDisabled: Boolean;
+begin
+  Result := Self >= TCheckState.csUncheckedDisabled;
+end;
+
+function TCheckStateHelper.IsChecked: Boolean;
+begin
+  Result := Self in [csCheckedNormal, csCheckedPressed, csCheckedDisabled];
+end;
+
+function TCheckStateHelper.IsUnChecked: Boolean;
+begin
+  Result := Self in [csUnCheckedNormal, csUnCheckedPressed, csUnCheckedDisabled];
+end;
+
+function TCheckStateHelper.IsMixed: Boolean;
+begin
+  Result := Self in [csMixedNormal, csMixedPressed, csMixedDisabled];
+end;
+
+function TCheckStateHelper.GetEnabled: TCheckState;
+begin
+  Result := cEnabledState[Self];
+end;
+
+function TCheckStateHelper.GetPressed(): TCheckState;
+begin
+  Result := cPressedState[Self];
+end;
+
+function TCheckStateHelper.GetUnpressed(): TCheckState;
+begin
+  Result := cUnpressedState[Self];
+end;
+
+function TCheckStateHelper.GetToggled(): TCheckState;
+begin
+  Result := cToggledState[Self];
+end;
+
+{ TSortDirectionHelper }
+
+function TSortDirectionHelper.ToInt(): Integer;
+begin
+  Result := cSortDirectionToInt[Self];
+end;
+
+
 initialization
-  // This watcher is used whenever a global structure could be modified by more than one thread.
-  Watcher := TCriticalSection.Create;
 
 finalization
-  if Initialized then
-    FinalizeGlobalStructures;
-
-  Watcher.Free;
-  Watcher := nil;
+  FinalizeGlobalStructures();
 
 end.

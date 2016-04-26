@@ -137,6 +137,8 @@ begin
       Columns[I].Hint := Columns[I].Hint + #10 + '(Can show further information in hints too.)';
 
   ConvertToHighColor(TreeImages);
+
+  VST2.InitRecursive(nil); // Without this statement, the scrollbar will be wrong and correct itself when scrolling down. See issue #597
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -273,7 +275,11 @@ begin
         end;
     end;
     Node.CheckType := LevelToCheckType[Data.Level];
-    Sender.CheckState[Node] := csCheckedNormal;
+    // use enabled and disabled checkboxes
+    case (Data.Level mod 5) of
+      0,1,2,3: Sender.CheckState[Node] := csCheckedNormal;
+      4: Sender.CheckState[Node] := csCheckedDisabled;
+    end;//case
   end;
 end;
 
